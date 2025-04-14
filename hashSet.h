@@ -170,7 +170,7 @@ template <class Data>
 void HashSet<Data>::print(Data key, std::ostream& out) const
 {
   auto place = hash(key);
-  for (auto i = 1; map_[place].isIntermediate(); ++i)
+  for (std::size_t i = 1; map_[place].isIntermediate(); ++i)
   {
     if (hash(map_[place].key_) == hash(key))
     {
