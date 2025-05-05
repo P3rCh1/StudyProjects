@@ -1,194 +1,310 @@
 #ifndef HASH_SET_H
 #define HASH_SET_H
 #include <cmath>
+#include <iterator>
 #include <iostream>
-template <class Data>
+#include <cassert>
+#include <algorithm>
+#include "HashIterator.h"
+
+template <class T>
+struct FwdListNode;
+
+template
+<
+  class Key,
+  class Hash = std::hash<Key>,
+  class KeyEqual = std::equal_to<Key>
+>
 class HashSet
 {
 public:
-  HashSet(std::size_t capacity = 100);
+  using iterator = HashIterator<Key>;
+  using const_iterator = HashIterator<Key>;
+  using node_t = FwdListNode<Key>;
+  using this_t = HashSet;
+
+  explicit HashSet(std::size_t capacity = 100);
   ~HashSet();
-  HashSet(const HashSet&) = delete;
-  HashSet& operator=(const HashSet&) = delete;
-  HashSet(HashSet&& rhs) noexcept;
-  HashSet& operator=(HashSet&& rhs) noexcept;
-  bool insert(const Data& key);
-  bool remove(const Data& key);
-  void print(Data key, std::ostream& out = std::cout) const;
-  void print(std::ostream& out = std::cout) const;
+  HashSet(const this_t& rhs);
+  this_t& operator=(const this_t& rhs);
+  HashSet(this_t&& rhs) noexcept;
+  this_t& operator=(this_t&& rhs) noexcept;
+  std::size_t size() const noexcept;
+  double loadFactor() const noexcept;
+  void rehash();
+  void reserve(std::size_t capacity);
+  bool insert(const Key& key);
+  bool remove(const Key& key);
+  iterator find(const Key& key) const;
+  const_iterator cbegin() const noexcept;
+  const_iterator cend() const noexcept;
+  iterator begin() const noexcept;
+  iterator end() const noexcept;
+  void clear() noexcept;
 
 private:
-  struct Line
-  {
-    Data key_;
-    bool occupied_{ false };
-    bool deleted_{ false };
-    bool isExpectedPlace(Data key) const;
-    bool isIntermediate() const;
-  };
+  std::size_t size_{ 0 };
+  std::size_t bucket_count_;
+  node_t** set_;
+  static constexpr double MAX_LOAD_FACTOR{ 0.7 };
+  static constexpr double EXPANSION_COEFFICIENT{ 2.0 };
 
-  std::size_t size_;
-  std::size_t capacity_;
-  Line* map_;
-  static constexpr double MAX_OCCUPANCY = 0.7;
-
-  static void normalize(Data& key);
-  std::size_t hash(Data key) const;
-
-  std::size_t getPlacement(const Data& key, std::size_t& i) const;
-  std::size_t search(const Data& key, std::size_t start, std::size_t i = 1) const;
+  void swap(this_t& rhs) noexcept;
+  std::size_t hash(const Key& key) const;
+  void copyFrom(const this_t& source, std::size_t newSize_);
+  void removeContainer() noexcept;
 };
 
-template <class Data>
-HashSet<Data>::HashSet(std::size_t capacity) :
-  capacity_(capacity),
-  map_(new HashSet::Line[capacity]),
-  size_(0)
-{}
-
-template <class Data>
-HashSet<Data>::~HashSet()
+template <class T>
+struct FwdListNode
 {
-  delete[] map_;
+  T data_;
+  FwdListNode* next_;
+  FwdListNode(const T& data, FwdListNode* next = nullptr) :
+    data_(data),
+    next_(next)
+  {}
+};
+
+template <class Key, class Hash, class KeyEqual>
+std::size_t HashSet<Key, Hash, KeyEqual>::size() const noexcept
+{
+  return size_;
 }
 
-template <class Data>
-HashSet<Data>::HashSet(HashSet<Data>&& rhs) noexcept :
-  capacity_(rhs.capacity_),
-  map_(rhs.map_),
-  size_(rhs.size_)
+template <class Key, class Hash, class KeyEqual>
+HashSet<Key, Hash, KeyEqual>::HashSet(std::size_t capacity)
 {
-  rhs.map_ = nullptr;
+  if (capacity == 0)
+  {
+    throw std::invalid_argument("Invalid capacyty_");
+  }
+  bucket_count_ = static_cast<std::size_t>(capacity / MAX_LOAD_FACTOR) + 1;
+  set_ = new node_t*[bucket_count_] {};  
 }
 
-template <class Data>
-HashSet<Data>& HashSet<Data>::operator=(HashSet<Data>&& rhs) noexcept
+template <class Key, class Hash, class KeyEqual>
+void HashSet<Key, Hash, KeyEqual>::clear() noexcept
+{
+  for (std::size_t i = 0; i < bucket_count_; ++i)
+  {
+    node_t* cur = set_[i];
+    while (cur)
+    {
+      node_t* next = cur->next_;
+      delete cur;
+      cur = next;
+    }
+    set_[i] = nullptr;
+  }
+  size_ = 0;
+}
+
+template <class Key, class Hash, class KeyEqual>
+void HashSet<Key, Hash, KeyEqual>::removeContainer() noexcept
+{
+  clear();
+  delete[] set_;
+  set_ = nullptr;
+  bucket_count_ = 0;
+}
+
+template <class Key, class Hash, class KeyEqual>
+HashSet<Key, Hash, KeyEqual>::~HashSet()
+{
+  removeContainer();
+}
+
+template <class Key, class Hash, class KeyEqual>
+HashSet<Key, Hash, KeyEqual>::HashSet(this_t&& rhs) noexcept:
+  size_(rhs.size_),
+  bucket_count_(rhs.bucket_count_),
+  set_(rhs.set_)
+{
+  rhs.set_ = nullptr;
+  rhs.bucket_count_ = 0;
+  rhs.size_ = 0;
+}
+
+template <class Key, class Hash, class KeyEqual>
+auto HashSet<Key, Hash, KeyEqual>::operator=(this_t&& rhs) noexcept -> this_t&
 {
   if (this != &rhs)
   {
-    delete[] map_;
-    capacity_ = rhs.capacity_;
-    map_ = rhs.map_;
-    size_ = rhs.size_;
-    rhs.map_ = nullptr;
+    this_t tmp(std::move(rhs));
+    removeContainer();
+    swap(tmp);    
+  }
+  return (*this);
+}
+
+template <class Key, class Hash, class KeyEqual>
+void HashSet<Key, Hash, KeyEqual>::copyFrom(const this_t& source, std::size_t newSize_)
+{
+  this_t tmp(newSize_);
+  for (const auto& x: source)
+  {
+    auto bucket = tmp.hash(x);
+    tmp.set_[bucket] = new node_t(x, tmp.set_[bucket]);
+    ++tmp.size_;
+  }
+  (*this) = std::move(tmp);
+}
+
+template <class Key, class Hash, class KeyEqual>
+HashSet<Key, Hash, KeyEqual>::HashSet(const this_t& rhs):
+  set_(nullptr),
+  bucket_count_(0)
+{
+  copyFrom(rhs, rhs.size_);
+}
+
+template <class Key, class Hash, class KeyEqual>
+void HashSet<Key, Hash, KeyEqual>::swap(this_t& rhs) noexcept
+{
+  std::swap(size_, rhs.size_);
+  std::swap(bucket_count_, rhs.bucket_count_);
+  std::swap(set_, rhs.set_);
+}
+
+template <class Key, class Hash, class KeyEqual>
+auto HashSet<Key, Hash, KeyEqual>::operator=(const this_t& rhs) -> this_t&
+{
+  if (this != &rhs)
+  {
+    removeContainer();
+    copyFrom(rhs, rhs.size_);
   }
   return *this;
 }
 
-template <>
-void HashSet<double>::normalize(double& key)
+template <class Key, class Hash, class KeyEqual>
+double HashSet<Key, Hash, KeyEqual>::loadFactor() const noexcept
 {
-  if (key < 0)
+  assert(bucket_count_ != 0);
+  return static_cast<double>(size_) / bucket_count_;
+}
+
+template <class Key, class Hash, class KeyEqual>
+void HashSet<Key, Hash, KeyEqual>::rehash()
+{
+  copyFrom(*this, static_cast<std::size_t>(bucket_count_ * MAX_LOAD_FACTOR));
+}
+
+template <class Key, class Hash, class KeyEqual>
+void HashSet<Key, Hash, KeyEqual>::reserve(std::size_t capacity)
+{
+  if (capacity > size_)
   {
-    key = -key;
+    copyFrom(*this, capacity);
   }
-  while (key >= 1)
+}
+
+template <class Key, class Hash, class KeyEqual>
+bool HashSet<Key, Hash, KeyEqual>::insert(const Key& key)
+{ 
+  auto bucket = hash(key);
+  auto current = set_[bucket];
+  KeyEqual keyEqual;
+  while (current && !keyEqual(current->data_, key))
   {
-    key /= 10;
+    current = current->next_;
   }
-}
-
-template <>
-std::size_t HashSet<double>::hash(double key) const
-{
-  normalize(key);
-  return std::floor(key * static_cast<double>(capacity_));
-}
-
-template <class Data>
-bool HashSet<Data>::Line::isIntermediate() const
-{
-  return occupied_ || deleted_;
-}
-
-template <class Data>
-bool HashSet<Data>::Line::isExpectedPlace(Data key) const
-{
-  return (!occupied_) || (key_ == key);
-}
-
-template <class Data>
-std::size_t HashSet<Data>::getPlacement(const Data& key, std::size_t& i) const
-{
-  auto place = hash(key);
-  for (i; !map_[place].isExpectedPlace(key); ++i)
-  {
-    place = (place + i * i) % capacity_;
-  }
-  return place;
-}
-
-template <class Data>
-std::size_t HashSet<Data>::search(const Data& key, std::size_t start, std::size_t i) const
-{
-  for (i; map_[start].isIntermediate(); ++i)
-  {
-    if (!map_[start].deleted_ && map_[start].key_ == key)
-    {
-      return start;
-    }
-    start = (start + i * i) % capacity_;
-  }
-  return capacity_;
-}
-
-template <class Data>
-bool HashSet<Data>::insert(const Data& key)
-{
-  if ((size_ / capacity_) >= HashSet::MAX_OCCUPANCY)
-  {
-    throw std::overflow_error("Max occupancy has been exceeded");
-  }
-  std::size_t i = 1;
-  auto place = getPlacement(key, i);
-  if (search(key, place, i) != capacity_)
+  if (current)
   {
     return false;
   }
-  map_[place].key_ = key;
-  map_[place].occupied_ = true;
-  map_[place].deleted_ = false;
+  if (loadFactor() >= MAX_LOAD_FACTOR)
+  {
+    copyFrom(*this, size_ * static_cast<std::size_t>(EXPANSION_COEFFICIENT));
+    bucket = hash(key);
+  }
+  set_[bucket] = new node_t(key, set_[bucket]);
   ++size_;
   return true;
 }
 
-template <class Data>
-bool HashSet<Data>::remove(const Data& key)
+template <class Key, class Hash, class KeyEqual>
+auto HashSet<Key, Hash, KeyEqual>::cbegin() const noexcept -> const_iterator
 {
-  auto place = search(key, hash(key));
-  if (place == capacity_)
+  auto firstNode = set_;
+  while ((firstNode != set_ + bucket_count_) && !(*firstNode))
   {
-    return false;
+    ++firstNode;
   }
-  map_[place].deleted_ = true;
-  map_[place].occupied_ = false;
-  --size_;
-  return true;
+  if (firstNode == set_ + bucket_count_)
+  {
+    return const_iterator(firstNode, nullptr, set_ + bucket_count_);
+  }
+  return const_iterator(firstNode, *firstNode, set_ + bucket_count_);
 }
 
-template <class Data>
-void HashSet<Data>::print(Data key, std::ostream& out) const
+template <class Key, class Hash, class KeyEqual>
+auto HashSet<Key, Hash, KeyEqual>::cend() const noexcept -> const_iterator
 {
-  auto place = hash(key);
-  for (std::size_t i = 1; map_[place].isIntermediate(); ++i)
-  {
-    if (hash(map_[place].key_) == hash(key))
-    {
-      out << map_[place].key_ << ' ';
-    }
-    place = (place + i * i) % capacity_;
-  }
+  return const_iterator(set_ + bucket_count_, nullptr, set_ + bucket_count_);
 }
 
-template <class Data>
-void HashSet<Data>::print(std::ostream& out) const
+template <class Key, class Hash, class KeyEqual>
+auto HashSet<Key, Hash, KeyEqual>::begin() const noexcept -> iterator
 {
-  for (std::size_t i = 0; i < capacity_; i++)
+  return cbegin();
+}
+
+template <class Key, class Hash, class KeyEqual>
+auto HashSet<Key, Hash, KeyEqual>::end() const noexcept -> iterator
+{
+  return cend();
+}
+
+template <class Key, class Hash, class KeyEqual>
+auto HashSet<Key, Hash, KeyEqual>::find(const Key& key)  const -> iterator
+{
+  auto bucket = hash(key);
+  auto current = set_[bucket];
+  KeyEqual keyEqual;
+  while (current && !keyEqual(current->data_, key))
   {
-    if (map_[i].occupied_)
-    {
-      out << map_[i].key_ << ' ';
-    }
+    current = current->next_;
   }
+  if (current)
+  {
+    return iterator(set_ + bucket, current, set_ + bucket_count_);
+  }
+  return end();
+}
+
+template <class Key, class Hash, class KeyEqual>
+std::size_t HashSet<Key, Hash, KeyEqual>::hash(const Key& key) const
+{
+  return Hash{}(key) % bucket_count_;
+}
+
+template <class Key, class Hash, class KeyEqual>
+bool HashSet<Key, Hash, KeyEqual>::remove(const Key& key)
+{
+  auto bucket = hash(key);
+  auto current = set_[bucket];
+  if (current && KeyEqual{}(current->data_, key))
+  {
+    set_[bucket] = current->next_;
+    delete current;
+    --size_;
+    return true;
+  }
+  while (current && current->data_ != key)
+  {
+    auto next = current->next_;
+    if (next && next->data_ == key)
+    {
+      current->next_ = next->next_;
+      delete next;
+      --size_;
+      return true;
+    }
+    current = next;
+  }
+  return false;
 }
 #endif
